@@ -1,7 +1,8 @@
-import 'dotenv/config';
-import express from 'express';
-import http from 'http';
-import { Server } from 'socket.io';
+require('dotenv').config();
+
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_QUEUE_PER_USER = Number(process.env.MAX_QUEUE_PER_USER || 100);

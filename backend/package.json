@@ -2,7 +2,6 @@
   "name": "iris-private-chat-backend",
   "version": "1.0.0",
   "description": "Minimal Socket.IO relay for a two-user encrypted private chat.",
-  "type": "module",
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
