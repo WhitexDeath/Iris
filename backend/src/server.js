@@ -1,5 +1,5 @@
 require('dotenv').config();
-
+const path = require('path');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -18,6 +18,14 @@ const app = express();
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
+
+const publicPath = path.join(__dirname, '..', 'public');
+
+app.use(express.static(publicPath));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(publicPath, 'index.html'));
+});
 
 app.get('/', (_req, res) => {
   res.json({
@@ -380,6 +388,10 @@ setInterval(() => {
     }
   }
 }, Math.min(PRESENCE_IDLE_TTL_MS, 10 * 60 * 1000)).unref();
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(publicPath, 'index.html'));
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Iris backend running on port ${PORT}`);
