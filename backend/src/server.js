@@ -1,26 +1,29 @@
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const PORT = Number(process.env.PORT || 8080);
-const FRONTEND_DIST = process.env.FRONTEND_DIST || '';
+const PORT = Number(process.env.PORT || 3000);
 const MAX_QUEUE_PER_USER = Number(process.env.MAX_QUEUE_PER_USER || 100);
 const MAX_REGISTERED_USERS = Number(process.env.MAX_REGISTERED_USERS || 200);
 const PRESENCE_IDLE_TTL_MS = Number(process.env.PRESENCE_IDLE_TTL_MS || 24 * 60 * 60 * 1000);
+
 const allowedOrigins = (process.env.CORS_ORIGIN || '*')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
 const app = express();
+
 app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
+
+app.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'Iris backend online'
+  });
+});
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -28,28 +31,21 @@ app.get('/health', (_req, res) => {
     service: 'iris-identity-relay',
     uptime: process.uptime(),
     users: users.size,
-    queuedMessages: Array.from(offlineQueues.values()).reduce((total, queue) => total + queue.length, 0)
+    queuedMessages: Array.from(offlineQueues.values()).reduce(
+      (total, queue) => total + queue.length,
+      0
+    )
   });
 });
 
-if (FRONTEND_DIST) {
-  const staticRoot = path.resolve(__dirname, '..', FRONTEND_DIST);
-  app.use(express.static(staticRoot, { maxAge: '1h', index: false }));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/socket.io')) return next();
-    res.sendFile(path.join(staticRoot, 'index.html'), (err) => {
-      if (err) next();
-    });
-  });
-}
-
 const server = http.createServer(app);
+
 const io = new Server(server, {
   transports: ['websocket'],
   serveClient: false,
   maxHttpBufferSize: 64 * 1024,
-  pingInterval: 20_000,
-  pingTimeout: 20_000,
+  pingInterval: 20000,
+  pingTimeout: 20000,
   cors: {
     origin: allowedOrigins.includes('*') ? '*' : allowedOrigins,
     methods: ['GET', 'POST']
@@ -60,15 +56,23 @@ const users = new Map();
 const offlineQueues = new Map();
 
 function ack(callback, payload) {
-  if (typeof callback === 'function') callback(payload);
+  if (typeof callback === 'function') {
+    callback(payload);
+  }
 }
 
 function cleanUserKey(value) {
-  return String(value || '').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 11);
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, '')
+    .slice(0, 11);
 }
 
 function cleanText(value, max = 64) {
-  return String(value || '').replace(/[^\w .@-]/g, '').trim().slice(0, max);
+  return String(value || '')
+    .replace(/[^\w .@-]/g, '')
+    .trim()
+    .slice(0, max);
 }
 
 function isValidUserKey(value) {
@@ -76,11 +80,17 @@ function isValidUserKey(value) {
 }
 
 function isBase64ish(value, max = 4096) {
-  return typeof value === 'string' && value.length > 0 && value.length <= max && /^[A-Za-z0-9+/=]+$/.test(value);
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= max &&
+    /^[A-Za-z0-9+/=]+$/.test(value)
+  );
 }
 
 function publicProfile(user) {
   if (!user) return null;
+
   return {
     userKey: user.userKey,
     displayName: user.displayName,
@@ -96,23 +106,34 @@ function notifyWatchers(changedUserKey) {
     online: false,
     lastSeen: Date.now()
   };
+
   io.to(`watch:${changedUserKey}`).emit('presence-update', profile);
 }
 
 function queueOfflineMessage(recipientUserKey, envelope) {
   const queue = offlineQueues.get(recipientUserKey) || [];
+
   queue.push(envelope);
-  while (queue.length > MAX_QUEUE_PER_USER) queue.shift();
+
+  while (queue.length > MAX_QUEUE_PER_USER) {
+    queue.shift();
+  }
+
   offlineQueues.set(recipientUserKey, queue);
 }
 
 function drainOfflineMessages(userKey, socket) {
   const queue = offlineQueues.get(userKey) || [];
+
   if (!queue.length) return;
 
   for (const envelope of queue) {
-    socket.emit('encrypted-message', { ...envelope, queued: true });
+    socket.emit('encrypted-message', {
+      ...envelope,
+      queued: true
+    });
   }
+
   offlineQueues.delete(userKey);
 }
 
@@ -149,15 +170,26 @@ io.on('connection', (socket) => {
     const publicKey = payload.publicKey;
 
     if (!isValidUserKey(userKey) || !isBase64ish(publicKey, 128)) {
-      return ack(callback, { ok: false, error: 'Invalid User Key or public key.' });
+      return ack(callback, {
+        ok: false,
+        error: 'Invalid User Key or public key.'
+      });
     }
 
     const existing = users.get(userKey);
+
     if (existing && existing.publicKey !== publicKey) {
-      return ack(callback, { ok: false, error: 'This User Key already belongs to a different public key.' });
+      return ack(callback, {
+        ok: false,
+        error: 'This User Key already belongs to a different public key.'
+      });
     }
+
     if (!existing && users.size >= MAX_REGISTERED_USERS) {
-      return ack(callback, { ok: false, error: 'Server user limit reached.' });
+      return ack(callback, {
+        ok: false,
+        error: 'Server user limit reached.'
+      });
     }
 
     if (existing?.socketId && existing.socketId !== socket.id) {
@@ -165,6 +197,7 @@ io.on('connection', (socket) => {
     }
 
     socket.data.userKey = userKey;
+
     socket.join(`user:${userKey}`);
 
     users.set(userKey, {
@@ -176,49 +209,88 @@ io.on('connection', (socket) => {
     });
 
     const queuedCount = offlineQueues.get(userKey)?.length || 0;
-    ack(callback, { ok: true, profile: publicProfile(users.get(userKey)), queuedCount });
+
+    ack(callback, {
+      ok: true,
+      profile: publicProfile(users.get(userKey)),
+      queuedCount
+    });
+
     notifyWatchers(userKey);
+
     drainOfflineMessages(userKey, socket);
   });
 
   socket.on('resolve-contact', (payload = {}, callback) => {
     const userKey = cleanUserKey(payload.userKey);
+
     if (!isValidUserKey(userKey)) {
-      return ack(callback, { ok: false, error: 'Enter a valid IRIS User Key.' });
+      return ack(callback, {
+        ok: false,
+        error: 'Enter a valid IRIS User Key.'
+      });
     }
 
     const profile = publicProfile(users.get(userKey));
+
     if (!profile) {
-      return ack(callback, { ok: false, error: 'User Key has not registered on this relay yet.' });
+      return ack(callback, {
+        ok: false,
+        error: 'User Key has not registered on this relay yet.'
+      });
     }
 
-    ack(callback, { ok: true, profile });
+    ack(callback, {
+      ok: true,
+      profile
+    });
   });
 
   socket.on('watch-contacts', (payload = {}, callback) => {
-    const requestedKeys = Array.isArray(payload.userKeys) ? payload.userKeys : [];
-    const userKeys = requestedKeys.map(cleanUserKey).filter(isValidUserKey).slice(0, 50);
+    const requestedKeys = Array.isArray(payload.userKeys)
+      ? payload.userKeys
+      : [];
+
+    const userKeys = requestedKeys
+      .map(cleanUserKey)
+      .filter(isValidUserKey)
+      .slice(0, 50);
 
     for (const room of socket.rooms) {
-      if (room.startsWith('watch:')) socket.leave(room);
+      if (room.startsWith('watch:')) {
+        socket.leave(room);
+      }
     }
+
     for (const userKey of userKeys) {
       socket.join(`watch:${userKey}`);
     }
 
     ack(callback, {
       ok: true,
-      contacts: userKeys.map((userKey) => publicProfile(users.get(userKey)) || { userKey, online: false })
+      contacts: userKeys.map(
+        (userKey) =>
+          publicProfile(users.get(userKey)) || {
+            userKey,
+            online: false
+          }
+      )
     });
   });
 
   socket.on('typing', (payload = {}) => {
     const senderUserKey = socket.data.userKey;
     const recipientUserKey = cleanUserKey(payload.recipientUserKey);
-    if (!senderUserKey || !isValidUserKey(recipientUserKey)) return;
+
+    if (!senderUserKey || !isValidUserKey(recipientUserKey)) {
+      return;
+    }
 
     const recipient = users.get(recipientUserKey);
-    if (!recipient?.socketId) return;
+
+    if (!recipient?.socketId) {
+      return;
+    }
 
     io.to(`user:${recipientUserKey}`).emit('typing', {
       senderUserKey,
@@ -228,47 +300,86 @@ io.on('connection', (socket) => {
 
   socket.on('encrypted-message', (payload = {}, callback) => {
     const senderUserKey = socket.data.userKey;
-    if (!senderUserKey) return ack(callback, { ok: false, error: 'Register identity before sending.' });
+
+    if (!senderUserKey) {
+      return ack(callback, {
+        ok: false,
+        error: 'Register identity before sending.'
+      });
+    }
 
     const sender = users.get(senderUserKey);
+
     const envelope = validateEnvelope(payload, senderUserKey);
-    if (!sender || !envelope || envelope.senderPublicKey !== sender.publicKey) {
-      return ack(callback, { ok: false, error: 'Invalid encrypted message envelope.' });
+
+    if (
+      !sender ||
+      !envelope ||
+      envelope.senderPublicKey !== sender.publicKey
+    ) {
+      return ack(callback, {
+        ok: false,
+        error: 'Invalid encrypted message envelope.'
+      });
     }
 
     const recipient = users.get(envelope.recipientUserKey);
+
     if (recipient?.socketId) {
-      io.to(`user:${envelope.recipientUserKey}`).emit('encrypted-message', envelope);
-      return ack(callback, { ok: true, delivery: 'delivered', receivedAt: Date.now() });
+      io.to(`user:${envelope.recipientUserKey}`).emit(
+        'encrypted-message',
+        envelope
+      );
+
+      return ack(callback, {
+        ok: true,
+        delivery: 'delivered',
+        receivedAt: Date.now()
+      });
     }
 
     queueOfflineMessage(envelope.recipientUserKey, envelope);
-    ack(callback, { ok: true, delivery: 'queued', receivedAt: Date.now() });
+
+    ack(callback, {
+      ok: true,
+      delivery: 'queued',
+      receivedAt: Date.now()
+    });
   });
 
   socket.on('disconnect', () => {
     const userKey = socket.data.userKey;
+
     if (!userKey) return;
 
     const user = users.get(userKey);
-    if (!user || user.socketId !== socket.id) return;
+
+    if (!user || user.socketId !== socket.id) {
+      return;
+    }
 
     user.socketId = null;
     user.lastSeen = Date.now();
+
     notifyWatchers(userKey);
   });
 });
 
 setInterval(() => {
   const now = Date.now();
+
   for (const [userKey, user] of users.entries()) {
-    if (!user.socketId && now - user.lastSeen > PRESENCE_IDLE_TTL_MS) {
+    if (
+      !user.socketId &&
+      now - user.lastSeen > PRESENCE_IDLE_TTL_MS
+    ) {
       users.delete(userKey);
+
       notifyWatchers(userKey);
     }
   }
 }, Math.min(PRESENCE_IDLE_TTL_MS, 10 * 60 * 1000)).unref();
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Iris identity relay listening on port ${PORT}`);
+  console.log(`Iris backend running on port ${PORT}`);
 });
