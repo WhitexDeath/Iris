@@ -18,7 +18,9 @@ import {
   saveContact,
   saveIdentity,
   saveMessage,
-  saveSetting
+  saveSetting,
+  deleteContact as dbDeleteContact,
+  deleteMessagesForContact
 } from '../lib/db';
 
 const socketUrl =
@@ -349,6 +351,17 @@ export function useEncryptedChat() {
     socketRef.current.emit('typing', { recipientUserKey: contact.userKey, isTyping });
   }, []);
 
+  const removeContact = useCallback(async (userKey) => {
+    await dbDeleteContact(userKey);
+    await deleteMessagesForContact(userKey);
+    contactsRef.current = contactsRef.current.filter((c) => c.userKey !== userKey);
+    setContacts([...contactsRef.current]);
+    if (selectedContactRef.current?.userKey === userKey) {
+      setSelectedUserKey('');
+      setMessages([]);
+    }
+  }, []);
+
   return {
     identity,
     fingerprint,
@@ -369,6 +382,7 @@ export function useEncryptedChat() {
     verifyContact,
     sendMessage,
     sendTyping,
+    removeContact,
     isReady: Boolean(identity && selectedContact?.publicKey)
   };
 }

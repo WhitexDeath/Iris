@@ -13,7 +13,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${chat.selectedUserKey ? 'hidden min-[820px]:flex' : 'flex'}`}>
         <IdentityPanel
           identity={chat.identity}
           fingerprint={chat.fingerprint}
@@ -31,10 +31,16 @@ export default function App() {
         />
       </aside>
 
-      <section className="chat-pane">
+      <section className={`chat-pane ${chat.selectedUserKey ? 'flex' : 'hidden min-[820px]:flex'}`}>
         <ChatHeader
           contact={chat.selectedContact}
           presence={chat.presence}
+          onBack={() => chat.setSelectedUserKey('')}
+          onDelete={() => {
+            if (window.confirm(`Delete contact ${chat.selectedContact?.displayName} and all messages?`)) {
+              chat.removeContact(chat.selectedUserKey);
+            }
+          }}
           onOpenSafety={() => {
             document.getElementById('safety-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
           }}

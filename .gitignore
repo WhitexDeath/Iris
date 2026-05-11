@@ -3,7 +3,6 @@ frontend/dist
 frontend/.env
 
 backend/node_modules
-backend/public
 backend/.env
 
 .DS_Store

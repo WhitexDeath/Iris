@@ -35,8 +35,10 @@ export default function ContactList({ contacts, presence, selectedUserKey, setSe
                 <span className="block truncate font-mono text-[11px] text-slate-500">{contact.userKey}</span>
               </span>
               {contact.verified ? (
-                <span className="verified-badge" title="Fingerprint verified">
-                  OK
+                <span className="verified-badge shrink-0" title="Fingerprint verified">
+                  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                  </svg>
                 </span>
               ) : null}
             </button>

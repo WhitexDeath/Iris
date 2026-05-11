@@ -1,10 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import ConnectionBadge from './ConnectionBadge.jsx';
-import { userKeyQrModules } from '../lib/qr.js';
 
 export default function IdentityPanel({ identity, fingerprint, displayName, setDisplayName, sharePayload, status }) {
   const [copied, setCopied] = useState(false);
-  const modules = useMemo(() => (identity?.userKey ? userKeyQrModules(identity.userKey) : []), [identity?.userKey]);
 
   async function copyShare() {
     await navigator.clipboard?.writeText(sharePayload);
@@ -45,29 +43,19 @@ export default function IdentityPanel({ identity, fingerprint, displayName, setD
             </p>
           </div>
           <button type="button" onClick={copyShare} className="icon-button" title="Copy contact payload">
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-              <path d="M8 8V6.8C8 5.81 8.81 5 9.8 5H18.2C19.19 5 20 5.81 20 6.8V15.2C20 16.19 19.19 17 18.2 17H17M5.8 8H14.2C15.19 8 16 8.81 16 9.8V18.2C16 19.19 15.19 20 14.2 20H5.8C4.81 20 4 19.19 4 18.2V9.8C4 8.81 4.81 8 5.8 8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
+            {copied ? (
+              <svg viewBox="0 0 24 24" className="h-5 w-5 text-mint" fill="none" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                <path d="M8 8V6.8C8 5.81 8.81 5 9.8 5H18.2C19.19 5 20 5.81 20 6.8V15.2C20 16.19 19.19 17 18.2 17H17M5.8 8H14.2C15.19 8 16 8.81 16 9.8V18.2C16 19.19 15.19 20 14.2 20H5.8C4.81 20 4 19.19 4 18.2V9.8C4 8.81 4.81 8 5.8 8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            )}
           </button>
         </div>
-
-        <div className="mt-4 grid place-items-center rounded-[18px] bg-slate-50 p-3">
-          {modules.length ? (
-            <svg viewBox="0 0 29 29" className="h-44 w-44" role="img" aria-label="QR code for your Iris User Key">
-              <rect width="29" height="29" fill="#f8fafc" />
-              {modules.map((row, y) =>
-                row.map((dark, x) =>
-                  dark ? <rect key={`${x}-${y}`} x={x + 4} y={y + 4} width="1" height="1" fill="#07110d" /> : null
-                )
-              )}
-            </svg>
-          ) : (
-            <div className="h-44 w-44" />
-          )}
-        </div>
-
-        <p className="mt-3 text-center text-xs text-slate-400">
-          {copied ? 'Copied contact payload' : 'QR shares your User Key. Copy includes the full trusted key payload.'}
+        <p className="mt-3 text-xs text-slate-400">
+          Copy this payload to share your secure identity with a new contact.
         </p>
       </div>
 

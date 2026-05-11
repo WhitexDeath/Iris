@@ -16,13 +16,39 @@ function TypingIndicator() {
 
 export default function MessageList({ messages, peerTyping, contact }) {
   const endRef = useRef(null);
+  const containerRef = useRef(null);
+  const prevCount = useRef(messages.length);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, peerTyping]);
+    const container = containerRef.current;
+    if (!container) return;
+
+    const isNewMessage = messages.length > prevCount.current;
+    const lastMessage = messages[messages.length - 1];
+    const isMyMessage = lastMessage?.sender === 'me';
+    
+    // Check if we are near the bottom. Since DOM already updated, we use a generous threshold
+    // of 300px to account for the height of the newly added message.
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
+
+    if (isNewMessage) {
+      if (isMyMessage || isNearBottom) {
+        endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
+    } else if (peerTyping) {
+      if (isNearBottom) {
+        endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
+    } else if (messages.length > 0 && prevCount.current === 0) {
+      // Initial load of messages
+      endRef.current?.scrollIntoView({ block: 'end' });
+    }
+
+    prevCount.current = messages.length;
+  }, [messages, peerTyping]);
 
   return (
-    <main className="message-list">
+    <main className="message-list" ref={containerRef}>
       {!contact ? (
         <div className="empty-state">
           <p className="text-xl font-semibold text-white">Your private address book is ready</p>

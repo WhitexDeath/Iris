@@ -102,3 +102,25 @@ export async function getMessagesForContact(peerUserKey) {
     request.onerror = () => reject(request.error);
   });
 }
+
+export async function deleteContact(userKey) {
+  return storeAction('contacts', 'readwrite', (store) => store.delete(userKey));
+}
+
+export async function deleteMessagesForContact(peerUserKey) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const store = tx.objectStore('messages');
+    const index = store.index('byPeer');
+    const request = index.getAllKeys(peerUserKey);
+    request.onsuccess = () => {
+      const keys = request.result;
+      for (const key of keys) {
+        store.delete(key);
+      }
+      resolve(true);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
