@@ -145,7 +145,6 @@ export function useEncryptedChat() {
   useEffect(() => {
     const socket = io(socketUrl, {
       autoConnect: false,
-      transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 500,
