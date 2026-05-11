@@ -4,8 +4,8 @@ function initials(contact) {
 
 export default function ContactList({ contacts, presence, selectedUserKey, setSelectedUserKey }) {
   return (
-    <section className="min-h-0 flex-1">
-      <div className="mb-3 flex items-center justify-between px-1">
+    <section className="min-h-0 flex-1 flex flex-col">
+      <div className="mb-3 flex items-center justify-between px-1 shrink-0">
         <h2 className="text-sm font-semibold text-white">Contacts</h2>
         <span className="text-xs text-slate-500">{contacts.length}</span>
       </div>
