@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ChatHeader from './components/ChatHeader.jsx';
 import Composer from './components/Composer.jsx';
 import ContactList from './components/ContactList.jsx';
@@ -12,6 +12,12 @@ export default function App() {
   const chat = useEncryptedChat();
   const peerTyping = chat.peerTypingKey && chat.peerTypingKey === chat.selectedContact?.userKey;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [actionState, setActionState] = useState(null); // { type: 'edit' | 'reply', message: msgObj }
+
+  // Clear action state when contact changes
+  useEffect(() => {
+    setActionState(null);
+  }, [chat.selectedUserKey]);
 
   return (
     <>
@@ -49,8 +55,21 @@ export default function App() {
               document.getElementById('safety-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }}
           />
-          <MessageList messages={chat.messages} peerTyping={peerTyping} contact={chat.selectedContact} />
-          <Composer disabled={!chat.isReady} sendMessage={chat.sendMessage} sendTyping={chat.sendTyping} />
+          <MessageList 
+            messages={chat.messages} 
+            peerTyping={peerTyping} 
+            contact={chat.selectedContact} 
+            onAction={(type, msg) => setActionState({ type, message: msg })}
+            onDelete={chat.deleteMessage}
+          />
+          <Composer 
+            disabled={!chat.isReady} 
+            sendMessage={chat.sendMessage} 
+            sendTyping={chat.sendTyping} 
+            editMessage={chat.editMessage}
+            actionState={actionState}
+            onCancelAction={() => setActionState(null)}
+          />
         </section>
 
         <div id="safety-panel" className="safety-column">

@@ -124,3 +124,29 @@ export async function deleteMessagesForContact(peerUserKey) {
     request.onerror = () => reject(request.error);
   });
 }
+
+export async function getMessage(id) {
+  return storeAction('messages', 'readonly', (store) => store.get(id));
+}
+
+export async function updateMessage(id, updaterFn) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const store = tx.objectStore('messages');
+    const request = store.get(id);
+
+    request.onsuccess = () => {
+      const msg = request.result;
+      if (!msg) return resolve(null);
+      
+      const updatedMsg = updaterFn(msg);
+      if (!updatedMsg) return resolve(msg);
+
+      const putRequest = store.put(updatedMsg);
+      putRequest.onsuccess = () => resolve(updatedMsg);
+      putRequest.onerror = () => reject(putRequest.error);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}

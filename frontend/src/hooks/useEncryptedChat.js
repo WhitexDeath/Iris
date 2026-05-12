@@ -20,11 +20,24 @@ import {
   saveMessage,
   saveSetting,
   deleteContact as dbDeleteContact,
-  deleteMessagesForContact
+  deleteMessagesForContact,
+  updateMessage
 } from '../lib/db';
 
 const socketUrl =
   import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV ? 'http://localhost:8080' : window.location.origin);
+
+function parsePayload(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.type) {
+      return parsed;
+    }
+  } catch {
+    // legacy format
+  }
+  return { type: 'chat', text: raw };
+}
 
 function statusFromDelivery(delivery) {
   if (delivery === 'queued') return 'queued';
@@ -200,12 +213,39 @@ export function useEncryptedChat() {
         }
 
         const plaintext = decryptFromIdentity({ envelope, recipientIdentity: activeIdentity });
+        const payload = parsePayload(plaintext);
+
+        if (payload.type === 'delete') {
+          const updated = await updateMessage(payload.targetId, (msg) => {
+            if (msg.sender === 'peer') return { ...msg, deleted: true, deletedAt: Date.now() };
+            return msg;
+          });
+          if (updated && selectedContactRef.current?.userKey === contact.userKey) {
+            setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+          }
+          return;
+        }
+
+        if (payload.type === 'edit') {
+          const updated = await updateMessage(payload.targetId, (msg) => {
+            if (msg.sender === 'peer') {
+              return { ...msg, plaintext: payload.text, edited: true, editedAt: Date.now() };
+            }
+            return msg;
+          });
+          if (updated && selectedContactRef.current?.userKey === contact.userKey) {
+            setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+          }
+          return;
+        }
+
         const message = {
           id: envelope.id,
           conversationKey: contact.userKey,
           peerUserKey: contact.userKey,
           sender: 'peer',
           plaintext,
+          payload,
           envelope,
           createdAt: envelope.createdAt,
           status: envelope.queued ? 'received from queue' : 'received'
@@ -245,7 +285,7 @@ export function useEncryptedChat() {
 
     saveSetting('selectedUserKey', selectedUserKey).catch(() => undefined);
     getMessagesForContact(selectedUserKey)
-      .then(setMessages)
+      .then((msgs) => setMessages(msgs.map((m) => ({ ...m, payload: m.payload || parsePayload(m.plaintext) }))))
       .catch(() => setError('Could not load this conversation.'));
   }, [selectedContact, selectedUserKey]);
 
@@ -312,19 +352,25 @@ export function useEncryptedChat() {
     setContacts(contactsRef.current);
   }, []);
 
-  const sendMessage = useCallback(async (plaintext) => {
+  const sendMessage = useCallback(async (plaintext, options = {}) => {
     const trimmed = plaintext.trim();
     const activeIdentity = identityRef.current;
     const contact = selectedContactRef.current;
     if (!trimmed || !activeIdentity || !contact?.publicKey) return false;
 
-    const envelope = encryptForContact({ plaintext: trimmed, senderIdentity: activeIdentity, contact });
+    const payloadObj = { type: 'chat', text: trimmed };
+    if (options.replyTo) payloadObj.replyTo = options.replyTo;
+    
+    const stringified = JSON.stringify(payloadObj);
+    const envelope = encryptForContact({ plaintext: stringified, senderIdentity: activeIdentity, contact });
+    
     const localMessage = {
       id: envelope.id,
       conversationKey: contact.userKey,
       peerUserKey: contact.userKey,
       sender: 'me',
-      plaintext: trimmed,
+      plaintext: stringified,
+      payload: payloadObj,
       envelope,
       createdAt: envelope.createdAt,
       status: 'sending'
@@ -341,6 +387,54 @@ export function useEncryptedChat() {
       if (!response?.ok) setError(response?.error || 'Message was not accepted by the relay.');
     });
 
+    return true;
+  }, []);
+
+  const editMessage = useCallback(async (messageId, newText) => {
+    const trimmed = newText.trim();
+    const activeIdentity = identityRef.current;
+    const contact = selectedContactRef.current;
+    if (!trimmed || !activeIdentity || !contact?.publicKey) return false;
+
+    const payloadObj = { type: 'edit', targetId: messageId, text: trimmed };
+    const stringified = JSON.stringify(payloadObj);
+    const envelope = encryptForContact({ plaintext: stringified, senderIdentity: activeIdentity, contact });
+
+    const updated = await updateMessage(messageId, (msg) => {
+      if (msg.sender === 'me') {
+         const p = msg.payload || parsePayload(msg.plaintext);
+         return { ...msg, plaintext: stringified, payload: { ...p, text: trimmed }, edited: true, editedAt: Date.now() };
+      }
+      return msg;
+    });
+    
+    if (updated) {
+      setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+    }
+
+    socketRef.current.emit('encrypted-message', envelope);
+    return true;
+  }, []);
+
+  const deleteMessage = useCallback(async (messageId) => {
+    const activeIdentity = identityRef.current;
+    const contact = selectedContactRef.current;
+    if (!activeIdentity || !contact?.publicKey) return false;
+
+    const payloadObj = { type: 'delete', targetId: messageId };
+    const stringified = JSON.stringify(payloadObj);
+    const envelope = encryptForContact({ plaintext: stringified, senderIdentity: activeIdentity, contact });
+
+    const updated = await updateMessage(messageId, (msg) => {
+      if (msg.sender === 'me') return { ...msg, deleted: true, deletedAt: Date.now() };
+      return msg;
+    });
+    
+    if (updated) {
+      setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+    }
+
+    socketRef.current.emit('encrypted-message', envelope);
     return true;
   }, []);
 
@@ -380,6 +474,8 @@ export function useEncryptedChat() {
     addContact,
     verifyContact,
     sendMessage,
+    editMessage,
+    deleteMessage,
     sendTyping,
     removeContact,
     isReady: Boolean(identity && selectedContact?.publicKey)
