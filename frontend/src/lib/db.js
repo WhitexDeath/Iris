@@ -57,6 +57,21 @@ export async function saveIdentity(identity) {
   return storeAction('identity', 'readwrite', (store) => store.put({ id: 'default', ...identity }));
 }
 
+export async function replaceIdentity(identity) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['identity', 'contacts', 'messages', 'settings'], 'readwrite');
+    const identityStore = tx.objectStore('identity');
+    identityStore.clear();
+    identityStore.put({ id: 'default', ...identity });
+    tx.objectStore('contacts').clear();
+    tx.objectStore('messages').clear();
+    tx.objectStore('settings').delete('selectedUserKey');
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function getSetting(id) {
   return storeAction('settings', 'readonly', (store) => store.get(id));
 }
@@ -139,12 +154,57 @@ export async function updateMessage(id, updaterFn) {
     request.onsuccess = () => {
       const msg = request.result;
       if (!msg) return resolve(null);
-      
+
       const updatedMsg = updaterFn(msg);
       if (!updatedMsg) return resolve(msg);
 
       const putRequest = store.put(updatedMsg);
       putRequest.onsuccess = () => resolve(updatedMsg);
+      putRequest.onerror = () => reject(putRequest.error);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function updateContactUnread(userKey, increment = 1) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('contacts', 'readwrite');
+    const store = tx.objectStore('contacts');
+    const request = store.get(userKey);
+
+    request.onsuccess = () => {
+      const contact = request.result;
+      if (!contact) return resolve(null);
+
+      contact.unreadCount = (contact.unreadCount || 0) + increment;
+      contact.updatedAt = Date.now();
+
+      const putRequest = store.put(contact);
+      putRequest.onsuccess = () => resolve(contact);
+      putRequest.onerror = () => reject(putRequest.error);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function clearContactUnread(userKey) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('contacts', 'readwrite');
+    const store = tx.objectStore('contacts');
+    const request = store.get(userKey);
+
+    request.onsuccess = () => {
+      const contact = request.result;
+      if (!contact) return resolve(null);
+
+      if (!contact.unreadCount) return resolve(contact); // already cleared
+
+      contact.unreadCount = 0;
+
+      const putRequest = store.put(contact);
+      putRequest.onsuccess = () => resolve(contact);
       putRequest.onerror = () => reject(putRequest.error);
     };
     request.onerror = () => reject(request.error);

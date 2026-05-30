@@ -1,7 +1,7 @@
 {
-  "name": "Iris Private Chat",
+  "name": "Iris Chat",
   "short_name": "Iris",
-  "description": "A lightweight two-person encrypted private chat.",
+  "description": "Accountless encrypted chat with simple Iris IDs.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#07110d",

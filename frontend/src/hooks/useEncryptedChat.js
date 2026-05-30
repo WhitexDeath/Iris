@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import {
-  contactSharePayload,
   createIdentity,
   decryptFromIdentity,
+  encryptAttachment,
   encryptForContact,
   fingerprintForPublicKey,
-  isValidUserKey,
-  normalizeUserKey,
-  parseContactInput
+  identityFromRecoveryCode,
+  parseContactInput,
+  recoveryCodeForIdentity
 } from '../lib/crypto';
 import {
   getContacts,
@@ -19,10 +19,19 @@ import {
   saveIdentity,
   saveMessage,
   saveSetting,
+  replaceIdentity,
   deleteContact as dbDeleteContact,
   deleteMessagesForContact,
-  updateMessage
+  updateMessage,
+  updateContactUnread,
+  clearContactUnread
 } from '../lib/db';
+import {
+  playNotificationSound,
+  showBrowserNotification,
+  flashTabTitle,
+  setTabUnreadCount
+} from '../lib/notifications';
 
 const socketUrl =
   import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV ? 'http://localhost:8080' : window.location.origin);
@@ -52,6 +61,7 @@ export function useEncryptedChat() {
   const contactsRef = useRef([]);
   const selectedContactRef = useRef(null);
   const typingTimerRef = useRef(null);
+  const uploadTokenRef = useRef('');
 
   const [identity, setIdentity] = useState(null);
   const [fingerprint, setFingerprint] = useState('');
@@ -69,10 +79,7 @@ export function useEncryptedChat() {
     [contacts, selectedUserKey]
   );
 
-  const sharePayload = useMemo(
-    () => (identity ? contactSharePayload(identity, displayName) : ''),
-    [displayName, identity]
-  );
+  const recoveryCode = useMemo(() => (identity ? recoveryCodeForIdentity(identity) : ''), [identity]);
 
   const setDisplayName = useCallback((value) => {
     const clean = value.slice(0, 40);
@@ -109,9 +116,13 @@ export function useEncryptedChat() {
       },
       (response) => {
         if (!response?.ok) {
+          uploadTokenRef.current = '';
+          setStatus('offline');
           setError(response?.error || 'Could not register this identity with the relay.');
           return;
         }
+        uploadTokenRef.current = response.uploadToken || '';
+        setStatus('connected');
         setPresence((current) => ({ ...current, [activeIdentity.userKey]: response.profile }));
         watchContacts();
       }
@@ -167,11 +178,14 @@ export function useEncryptedChat() {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      setStatus('connected');
+      setStatus('connecting');
       registerIdentity();
     });
     socket.on('connect_error', () => setStatus('offline'));
-    socket.on('disconnect', () => setStatus('offline'));
+    socket.on('disconnect', () => {
+      uploadTokenRef.current = '';
+      setStatus('offline');
+    });
     socket.on('reconnect_attempt', () => setStatus('reconnecting'));
 
     socket.on('presence-update', (profile) => {
@@ -251,6 +265,22 @@ export function useEncryptedChat() {
           status: envelope.queued ? 'received from queue' : 'received'
         };
         await saveMessage(message);
+
+        const isFocused = !document.hidden && document.hasFocus() && selectedContactRef.current?.userKey === contact.userKey;
+
+        if (!isFocused) {
+          const updatedContact = await updateContactUnread(contact.userKey, 1);
+          if (updatedContact) {
+            contactsRef.current = contactsRef.current.map(c => c.userKey === updatedContact.userKey ? updatedContact : c);
+            setContacts([...contactsRef.current]);
+          }
+          playNotificationSound();
+          showBrowserNotification(contact.displayName, payload.text || 'Sent an encrypted attachment', () => {
+            setSelectedUserKey(contact.userKey);
+          });
+          flashTabTitle();
+        }
+
         if (selectedContactRef.current?.userKey === contact.userKey) {
           setMessages((current) => [...current, message]);
         }
@@ -269,12 +299,25 @@ export function useEncryptedChat() {
 
   useEffect(() => {
     if (identity) registerIdentity();
-  }, [identity, registerIdentity]);
+  }, [displayName, identity, registerIdentity]);
 
   useEffect(() => {
     contactsRef.current = contacts;
     watchContacts(contacts);
+
+    const totalUnread = contacts.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
+    setTabUnreadCount(totalUnread);
   }, [contacts, watchContacts]);
+
+  const clearUnread = useCallback(async (userKey) => {
+    const updatedContact = await clearContactUnread(userKey);
+    if (updatedContact) {
+      contactsRef.current = contactsRef.current.map(c => c.userKey === userKey ? updatedContact : c);
+      setContacts([...contactsRef.current]);
+    }
+  }, []);
+
+  const clearError = useCallback(() => setError(''), []);
 
   useEffect(() => {
     selectedContactRef.current = selectedContact;
@@ -293,7 +336,7 @@ export function useEncryptedChat() {
     async (input, alias = '') => {
       const parsed = parseContactInput(input);
       if (!parsed) {
-        setError('Enter an IRIS User Key or scan/share a full Iris contact QR payload.');
+        setError('Enter a valid Iris ID, such as IRIS-8F2A91.');
         return false;
       }
       if (parsed.userKey === identityRef.current?.userKey) {
@@ -320,8 +363,6 @@ export function useEncryptedChat() {
         setError('');
         return true;
       };
-
-      if (parsed.publicKey) return finish(parsed);
 
       const socket = socketRef.current;
       if (!socket?.connected) {
@@ -352,15 +393,16 @@ export function useEncryptedChat() {
     setContacts(contactsRef.current);
   }, []);
 
-  const sendMessage = useCallback(async (plaintext, options = {}) => {
-    const trimmed = plaintext.trim();
+  const sendPayload = useCallback(async (payloadObj) => {
     const activeIdentity = identityRef.current;
     const contact = selectedContactRef.current;
-    if (!trimmed || !activeIdentity || !contact?.publicKey) return false;
+    const socket = socketRef.current;
+    if (!activeIdentity || !contact?.publicKey) return false;
+    if (!socket?.connected) {
+      setError('Reconnect to the relay before sending.');
+      return false;
+    }
 
-    const payloadObj = { type: 'chat', text: trimmed };
-    if (options.replyTo) payloadObj.replyTo = options.replyTo;
-    
     const stringified = JSON.stringify(payloadObj);
     const envelope = encryptForContact({ plaintext: stringified, senderIdentity: activeIdentity, contact });
     
@@ -379,7 +421,7 @@ export function useEncryptedChat() {
     setMessages((current) => [...current, localMessage]);
     await saveMessage(localMessage);
 
-    socketRef.current.emit('encrypted-message', envelope, async (response) => {
+    socket.emit('encrypted-message', envelope, async (response) => {
       const status = response?.ok ? statusFromDelivery(response.delivery) : 'failed';
       const updated = { ...localMessage, status };
       await saveMessage(updated);
@@ -389,6 +431,63 @@ export function useEncryptedChat() {
 
     return true;
   }, []);
+
+  const sendMessage = useCallback(async (plaintext, options = {}) => {
+    const trimmed = plaintext.trim();
+    if (!trimmed) return false;
+
+    const payload = { type: 'chat', text: trimmed };
+    if (options.replyTo) payload.replyTo = options.replyTo;
+    return sendPayload(payload);
+  }, [sendPayload]);
+
+  const sendAttachment = useCallback(async (file, caption = '') => {
+    const socket = socketRef.current;
+    if (!socket?.connected || !uploadTokenRef.current) {
+      setError('Reconnect to the relay before uploading an attachment.');
+      return false;
+    }
+    if (!file?.type?.startsWith('image/')) {
+      setError('Choose an image file to attach.');
+      return false;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Choose an image smaller than 10 MB.');
+      return false;
+    }
+
+    try {
+      const encrypted = await encryptAttachment(file);
+      const response = await fetch('/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'x-iris-upload-token': uploadTokenRef.current
+        },
+        body: encrypted.blob
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok || !result.mediaId) {
+        setError(result.error || 'Attachment upload failed.');
+        return false;
+      }
+
+      const trimmedCaption = caption.trim();
+      return sendPayload({
+        type: 'image',
+        mediaId: result.mediaId,
+        mediaKey: encrypted.mediaKey,
+        mediaNonce: encrypted.mediaNonce,
+        mimeType: encrypted.mimeType,
+        fileName: file.name.slice(0, 120),
+        caption: trimmedCaption,
+        text: trimmedCaption || 'Sent an image'
+      });
+    } catch {
+      setError('The image could not be encrypted and uploaded.');
+      return false;
+    }
+  }, [sendPayload]);
 
   const editMessage = useCallback(async (messageId, newText) => {
     const trimmed = newText.trim();
@@ -455,10 +554,31 @@ export function useEncryptedChat() {
     }
   }, []);
 
+  const restoreIdentity = useCallback(async (value) => {
+    const restored = identityFromRecoveryCode(value);
+    if (!restored) {
+      setError('That recovery key is not valid.');
+      return false;
+    }
+
+    const activeIdentity = identityRef.current;
+    const isSameIdentity =
+      activeIdentity?.userKey === restored.userKey &&
+      activeIdentity?.secretKey === restored.secretKey;
+
+    if (isSameIdentity) {
+      await saveIdentity(restored);
+    } else {
+      await replaceIdentity(restored);
+    }
+    window.location.reload();
+    return true;
+  }, []);
+
   return {
     identity,
     fingerprint,
-    sharePayload,
+    recoveryCode,
     displayName,
     setDisplayName,
     contacts,
@@ -474,10 +594,14 @@ export function useEncryptedChat() {
     addContact,
     verifyContact,
     sendMessage,
+    sendAttachment,
     editMessage,
     deleteMessage,
+    clearUnread,
+    clearError,
     sendTyping,
     removeContact,
+    restoreIdentity,
     isReady: Boolean(identity && selectedContact?.publicKey)
   };
 }

@@ -3,11 +3,14 @@ const path = require('path');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_QUEUE_PER_USER = Number(process.env.MAX_QUEUE_PER_USER || 100);
 const MAX_REGISTERED_USERS = Number(process.env.MAX_REGISTERED_USERS || 200);
 const PRESENCE_IDLE_TTL_MS = Number(process.env.PRESENCE_IDLE_TTL_MS || 24 * 60 * 60 * 1000);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024);
 
 const allowedOrigins = (process.env.CORS_ORIGIN || '*')
   .split(',')
@@ -20,9 +23,41 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
 
 const publicPath = path.join(__dirname, '..', 'public');
+const uploadsPath = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadsPath)) {
+  fs.mkdirSync(uploadsPath, { recursive: true });
+}
 
 app.use(express.static(publicPath));
 
+const uploadSessions = new Map();
+
+app.post('/upload', express.raw({ type: 'application/octet-stream', limit: MAX_UPLOAD_BYTES }), (req, res) => {
+  const uploadToken = String(req.get('x-iris-upload-token') || '');
+  if (!uploadSessions.has(uploadToken)) {
+    return res.status(401).json({ ok: false, error: 'Reconnect before uploading an attachment.' });
+  }
+
+  if (!req.body || !Buffer.isBuffer(req.body)) {
+    return res.status(400).json({ ok: false, error: 'Invalid encrypted attachment data.' });
+  }
+  const mediaId = crypto.randomUUID();
+  const filePath = path.join(uploadsPath, mediaId);
+  fs.writeFile(filePath, req.body, (err) => {
+    if (err) return res.status(500).json({ ok: false, error: 'Upload failed' });
+    res.json({ ok: true, mediaId });
+  });
+});
+
+app.get('/media/:id', (req, res) => {
+  const mediaId = req.params.id;
+  if (!/^[0-9a-fA-F-]+$/.test(mediaId)) return res.status(400).send('Invalid ID');
+  const filePath = path.join(uploadsPath, mediaId);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+
+  res.setHeader('Cache-Control', 'public, max-age=31536000');
+  res.sendFile(filePath);
+});
 
 app.get('/', (_req, res) => {
   res.json({
@@ -202,6 +237,9 @@ io.on('connection', (socket) => {
     }
 
     socket.data.userKey = userKey;
+    if (socket.data.uploadToken) uploadSessions.delete(socket.data.uploadToken);
+    socket.data.uploadToken = crypto.randomUUID();
+    uploadSessions.set(socket.data.uploadToken, { userKey, socketId: socket.id });
 
     socket.join(`user:${userKey}`);
 
@@ -218,7 +256,8 @@ io.on('connection', (socket) => {
     ack(callback, {
       ok: true,
       profile: publicProfile(users.get(userKey)),
-      queuedCount
+      queuedCount,
+      uploadToken: socket.data.uploadToken
     });
 
     notifyWatchers(userKey);
@@ -354,6 +393,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     const userKey = socket.data.userKey;
+    if (socket.data.uploadToken) uploadSessions.delete(socket.data.uploadToken);
 
     if (!userKey) return;
 
@@ -384,6 +424,13 @@ setInterval(() => {
     }
   }
 }, Math.min(PRESENCE_IDLE_TTL_MS, 10 * 60 * 1000)).unref();
+
+app.use((error, _req, res, next) => {
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({ ok: false, error: 'Encrypted attachment exceeds the 10 MB limit.' });
+  }
+  return next(error);
+});
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));

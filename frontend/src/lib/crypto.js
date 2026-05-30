@@ -12,6 +12,10 @@ export function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function bytesToBase64Url(bytes) {
+  return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 export function base64ToBytes(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -19,6 +23,11 @@ export function base64ToBytes(value) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+function base64UrlToBytes(value) {
+  const base64 = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  return base64ToBytes(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='));
 }
 
 function bytesToHex(bytes) {
@@ -47,41 +56,74 @@ export function createIdentity() {
   };
 }
 
+export function recoveryCodeForIdentity(identity) {
+  const payload = encoder.encode(JSON.stringify({
+    version: 1,
+    userKey: identity.userKey,
+    secretKey: identity.secretKey
+  }));
+  return `IRIS-RECOVERY-${bytesToBase64Url(payload)}`;
+}
+
+export function identityFromRecoveryCode(value) {
+  const input = String(value || '').trim();
+  if (!input.startsWith('IRIS-RECOVERY-')) return null;
+
+  try {
+    const payload = JSON.parse(decoder.decode(base64UrlToBytes(input.slice('IRIS-RECOVERY-'.length))));
+    if (payload?.version !== 1 || !isValidUserKey(payload.userKey) || !payload.secretKey) return null;
+
+    const secretKey = base64ToBytes(payload.secretKey);
+    if (secretKey.length !== nacl.box.secretKeyLength) return null;
+
+    const pair = nacl.box.keyPair.fromSecretKey(secretKey);
+    return {
+      userKey: normalizeUserKey(payload.userKey),
+      publicKey: bytesToBase64(pair.publicKey),
+      secretKey: bytesToBase64(secretKey),
+      createdAt: Date.now()
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fingerprintForPublicKey(publicKey) {
   const digest = await crypto.subtle.digest('SHA-256', encoder.encode(publicKey));
   const hex = bytesToHex(new Uint8Array(digest)).slice(0, 32);
   return hex.match(/.{1,4}/g).join(' ');
 }
 
-export function contactSharePayload(identity, displayName) {
-  return JSON.stringify({
-    type: 'iris-contact',
-    version: 1,
-    userKey: identity.userKey,
-    displayName,
-    publicKey: identity.publicKey
-  });
-}
-
 export function parseContactInput(value) {
   const input = String(value || '').trim();
   if (!input) return null;
 
-  try {
-    const parsed = JSON.parse(input);
-    if (parsed?.type === 'iris-contact' && isValidUserKey(parsed.userKey) && parsed.publicKey) {
-      return {
-        userKey: normalizeUserKey(parsed.userKey),
-        displayName: String(parsed.displayName || parsed.userKey).slice(0, 40),
-        publicKey: parsed.publicKey
-      };
-    }
-  } catch {
-    // Plain User Key entry is supported; JSON parsing is only for QR payloads.
-  }
-
   const userKey = normalizeUserKey(input);
   return isValidUserKey(userKey) ? { userKey } : null;
+}
+
+export async function encryptAttachment(file) {
+  const key = nacl.randomBytes(nacl.secretbox.keyLength);
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const plaintext = new Uint8Array(await file.arrayBuffer());
+  const ciphertext = nacl.secretbox(plaintext, nonce, key);
+
+  return {
+    blob: new Blob([ciphertext], { type: 'application/octet-stream' }),
+    mediaKey: bytesToBase64(key),
+    mediaNonce: bytesToBase64(nonce),
+    mimeType: file.type || 'application/octet-stream'
+  };
+}
+
+export function decryptAttachment({ ciphertext, mediaKey, mediaNonce, mimeType }) {
+  const plaintext = nacl.secretbox.open(
+    new Uint8Array(ciphertext),
+    base64ToBytes(mediaNonce),
+    base64ToBytes(mediaKey)
+  );
+  if (!plaintext) throw new Error('Unable to decrypt attachment.');
+  return new Blob([plaintext], { type: mimeType || 'application/octet-stream' });
 }
 
 export function encryptForContact({ plaintext, senderIdentity, contact }) {
